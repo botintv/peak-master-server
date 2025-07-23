@@ -1,0 +1,270 @@
+using System;
+using ExitGames.Client.Photon;
+using Photon.Realtime;
+using Photon.Voice.Unity;
+using UnityEngine;
+
+namespace Photon.Voice
+{
+	// Token: 0x02000004 RID: 4
+	public abstract class VoiceFollowClient : VoiceConnection
+	{
+		// Token: 0x17000002 RID: 2
+		// (get) Token: 0x06000008 RID: 8
+		protected abstract bool LeaderInRoom { get; }
+
+		// Token: 0x17000003 RID: 3
+		// (get) Token: 0x06000009 RID: 9
+		protected abstract bool LeaderOfflineMode { get; }
+
+		// Token: 0x0600000A RID: 10
+		protected abstract string GetVoiceRoomName();
+
+		// Token: 0x0600000B RID: 11
+		protected abstract bool ConnectVoice();
+
+		// Token: 0x0600000C RID: 12 RVA: 0x000021A4 File Offset: 0x000003A4
+		public bool ConnectAndJoinRoom()
+		{
+			if (!this.LeaderInRoom)
+			{
+				base.Logger.Log(LogLevel.Error, "Cannot connect and join if Leader is not joined.", Array.Empty<object>());
+				return false;
+			}
+			if (this.ConnectVoice())
+			{
+				this.manualDisconnect = false;
+				return true;
+			}
+			base.Logger.Log(LogLevel.Error, "Connecting to server failed.", Array.Empty<object>());
+			return false;
+		}
+
+		// Token: 0x0600000D RID: 13 RVA: 0x000021F9 File Offset: 0x000003F9
+		public void Disconnect()
+		{
+			if (!base.Client.IsConnected)
+			{
+				base.Logger.Log(LogLevel.Error, "Cannot Disconnect if not connected.", Array.Empty<object>());
+				return;
+			}
+			this.manualDisconnect = true;
+			base.Client.Disconnect();
+		}
+
+		// Token: 0x0600000E RID: 14 RVA: 0x00002231 File Offset: 0x00000431
+		protected virtual void Start()
+		{
+			this.manualDisconnect = false;
+			this.FollowLeader();
+		}
+
+		// Token: 0x0600000F RID: 15 RVA: 0x00002240 File Offset: 0x00000440
+		protected override void OnDestroy()
+		{
+			base.OnDestroy();
+		}
+
+		// Token: 0x06000010 RID: 16 RVA: 0x00002248 File Offset: 0x00000448
+		protected override void OnOperationResponseReceived(OperationResponse operationResponse)
+		{
+			if (operationResponse.ReturnCode != 0)
+			{
+				byte operationCode = operationResponse.OperationCode;
+				if (operationCode == 226)
+				{
+					base.Logger.Log(LogLevel.Error, "Failed to join room. RoomName: '{2}' Region: {3} Error: {0}. Message: {1}.", new object[]
+					{
+						operationResponse.ReturnCode,
+						operationResponse.DebugMessage,
+						this.GetVoiceRoomName(),
+						base.Client.CloudRegion
+					});
+					this.errAuthOrJoin = true;
+					this.manualDisconnect = true;
+					this.Disconnect();
+					return;
+				}
+				if (operationCode - 230 <= 1)
+				{
+					base.Logger.Log(LogLevel.Error, "Setting AutoConnectAndJoin to false because authentication failed. Error: {0}. Message: {1}.", new object[]
+					{
+						operationResponse.ReturnCode,
+						operationResponse.DebugMessage
+					});
+					this.errAuthOrJoin = true;
+					return;
+				}
+				base.Logger.Log(LogLevel.Error, "Operation {0} response error code {1} message {2}", new object[]
+				{
+					operationResponse.OperationCode,
+					operationResponse.ReturnCode,
+					operationResponse.DebugMessage
+				});
+			}
+		}
+
+		// Token: 0x06000011 RID: 17 RVA: 0x00002348 File Offset: 0x00000548
+		protected void LeaderStateChanged(ClientState toState)
+		{
+			base.Logger.Log(LogLevel.Info, "OnLeaderStateChanged to {0}", new object[]
+			{
+				toState
+			});
+			if (toState == ClientState.Joined)
+			{
+				this.errAuthOrJoin = false;
+			}
+			this.FollowLeader(toState);
+		}
+
+		// Token: 0x06000012 RID: 18 RVA: 0x00002380 File Offset: 0x00000580
+		protected override void OnVoiceStateChanged(ClientState fromState, ClientState toState)
+		{
+			base.OnVoiceStateChanged(fromState, toState);
+			if (toState == ClientState.Disconnected)
+			{
+				if (this.manualDisconnect)
+				{
+					this.manualDisconnect = false;
+					return;
+				}
+				if (base.Client.DisconnectedCause == DisconnectCause.ClientTimeout && base.Client.ReconnectAndRejoin())
+				{
+					return;
+				}
+				if (base.Client.DisconnectedCause == DisconnectCause.DnsExceptionOnConnect)
+				{
+					Debug.LogWarning(string.Format("Voice Disconnected and will not immediately reconnect. Cause: {0}", base.Client.DisconnectedCause));
+					return;
+				}
+			}
+			base.Logger.Log(LogLevel.Debug, "OnVoiceStateChanged  from {0} to {1}", new object[]
+			{
+				fromState,
+				toState
+			});
+			this.FollowLeader(toState);
+		}
+
+		// Token: 0x06000013 RID: 19 RVA: 0x00002424 File Offset: 0x00000624
+		private void ConnectOrJoinVoice()
+		{
+			ClientState clientState = base.ClientState;
+			if (clientState != ClientState.PeerCreated && clientState != ClientState.Disconnected)
+			{
+				if (clientState != ClientState.ConnectedToMasterServer)
+				{
+					base.Logger.Log(LogLevel.Warning, "Leader joined room, Voice client is busy ({0}). Is this expected?", new object[]
+					{
+						base.ClientState
+					});
+				}
+				else
+				{
+					base.Logger.Log(LogLevel.Info, "Leader joined room, now joining Voice room", Array.Empty<object>());
+					if (!this.JoinVoiceRoom(this.GetVoiceRoomName()))
+					{
+						base.Logger.Log(LogLevel.Error, "Joining a voice room failed.", Array.Empty<object>());
+						return;
+					}
+				}
+			}
+			else
+			{
+				base.Logger.Log(LogLevel.Info, "Leader joined room, now connecting Voice client", Array.Empty<object>());
+				if (!this.ConnectVoice())
+				{
+					base.Logger.Log(LogLevel.Error, "Connecting to server failed.", Array.Empty<object>());
+					return;
+				}
+			}
+		}
+
+		// Token: 0x06000014 RID: 20 RVA: 0x000024DC File Offset: 0x000006DC
+		protected virtual bool JoinVoiceRoom(string voiceRoomName)
+		{
+			if (string.IsNullOrEmpty(voiceRoomName))
+			{
+				base.Logger.Log(LogLevel.Error, "Voice room name is null or empty.", Array.Empty<object>());
+				return false;
+			}
+			EnterRoomParams enterRoomParams = new EnterRoomParams
+			{
+				RoomOptions = new RoomOptions
+				{
+					IsVisible = false,
+					PlayerTtl = 2000
+				},
+				RoomName = voiceRoomName
+			};
+			Debug.Log(string.Concat(new string[]
+			{
+				"Calling OpJoinOrCreateRoom for room name '",
+				voiceRoomName,
+				"' region ",
+				base.Client.CloudRegion,
+				"."
+			}));
+			return base.Client.OpJoinOrCreateRoom(enterRoomParams);
+		}
+
+		// Token: 0x06000015 RID: 21 RVA: 0x00002579 File Offset: 0x00000779
+		private void FollowLeader(ClientState toState)
+		{
+			if (toState == ClientState.Joined || toState - ClientState.Disconnected <= 1)
+			{
+				base.Logger.Log(LogLevel.Debug, string.Format("FollowLeader for state {0}", toState), Array.Empty<object>());
+				this.FollowLeader();
+			}
+		}
+
+		// Token: 0x06000016 RID: 22 RVA: 0x000025B0 File Offset: 0x000007B0
+		private void FollowLeader()
+		{
+			if (this.manualDisconnect)
+			{
+				return;
+			}
+			if ((this.AutoConnectAndJoin && !this.errAuthOrJoin) || base.Client.IsConnected)
+			{
+				if (!this.LeaderInRoom || this.LeaderOfflineMode)
+				{
+					if (base.Client.IsConnected && base.Client.State != ClientState.Disconnecting)
+					{
+						base.Client.OpLeaveRoom(false, false);
+					}
+					return;
+				}
+				if (!base.Client.InRoom)
+				{
+					this.ConnectOrJoinVoice();
+					return;
+				}
+				string voiceRoomName = this.GetVoiceRoomName();
+				string name = base.Client.CurrentRoom.Name;
+				if (string.IsNullOrEmpty(name) || !name.Equals(voiceRoomName))
+				{
+					base.Logger.Log(LogLevel.Warning, "Voice room mismatch: Expected:\"{0}\" Current:\"{1}\", leaving the second to join the first.", new object[]
+					{
+						voiceRoomName,
+						name
+					});
+					if (!base.Client.OpLeaveRoom(false, false))
+					{
+						base.Logger.Log(LogLevel.Error, "Leaving the current voice room failed.", Array.Empty<object>());
+					}
+				}
+			}
+		}
+
+		// Token: 0x04000005 RID: 5
+		public bool AutoConnectAndJoin = true;
+
+		// Token: 0x04000006 RID: 6
+		private bool manualDisconnect;
+
+		// Token: 0x04000007 RID: 7
+		private bool errAuthOrJoin;
+	}
+}
