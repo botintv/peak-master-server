@@ -18,13 +18,21 @@ setInterval(() => {
 
 // Register or update a lobby
 app.post('/register', (req, res) => {
-  const { id, host, port, name, extra } = req.body;
-  if (!id || !host || !port || !name) {
+  const { id, host, port, name, extra, players } = req.body;
+  if (!id || !host || !port || !name || players == null) {
     console.warn("Received malformed register request:", req.body);
     return res.status(400).json({ error: "Missing fields" });
   }
-  lobbies[id] = { id, host, port, name, extra: extra || null, lastSeen: Date.now() };
-  console.log(`Registered/Updated lobby: ${id}, Name: ${name}, Host: ${host}:${port}, Extra: ${extra || 'N/A'}`);
+  lobbies[id] = {
+    id,
+    host,
+    port,
+    name,
+    extra: extra || null,
+    players,               // <— store the live player count
+    lastSeen: Date.now()
+  };
+  console.log(`Registered/Updated lobby: ${id}, ${name}, players=${players}`);
   res.json({ ok: true });
 });
 
